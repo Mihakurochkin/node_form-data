@@ -22,7 +22,23 @@ function createServer() {
       return;
     }
 
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
     const form = createReadStream(path.join(__dirname, 'index.html'));
+
+    form.on('error', (err) => {
+      console.error('Read stream error:', err);
+
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+        res.end();
+      } else {
+        res.destroy();
+      }
+    });
 
     res.on('close', () => {
       form.destroy();
