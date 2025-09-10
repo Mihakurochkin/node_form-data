@@ -2,7 +2,7 @@
 
 /* eslint-disable no-console */
 
-const { createReadStream, createWriteStream } = require('fs');
+const { createReadStream, createWriteStream, mkdirSync } = require('fs');
 const http = require('http');
 const path = require('path');
 
@@ -36,7 +36,7 @@ function createServer() {
       return;
     }
 
-    if (req.url !== '/add-expense') {
+    if (req.url !== '/add-expense' && req.url !== '/submit-expense') {
       res.statusCode = 404;
       res.setHeader('Content-Type', 'text/plain');
       res.end('Not Found');
@@ -55,10 +55,19 @@ function createServer() {
     });
 
     req.on('end', () => {
+      const contentType = req.headers['content-type'] || '';
       let payload;
 
       try {
-        payload = raw ? JSON.parse(raw) : {};
+        if (contentType.includes('application/json')) {
+          payload = raw ? JSON.parse(raw) : {};
+        } else if (contentType.includes('application/x-www-form-urlencoded')) {
+          const params = new URLSearchParams(raw);
+
+          payload = Object.fromEntries(params.entries());
+        } else {
+          payload = {};
+        }
       } catch (parseErr) {
         res.statusCode = 400;
         res.setHeader('Content-Type', 'text/plain');
@@ -73,10 +82,48 @@ function createServer() {
         amount: payload.amount,
       };
 
-      if (!expense.date || !expense.title || !expense.amount) {
-        res.statusCode = 400;
+      // Validation
+      const parsedAmount =
+        typeof expense.amount === 'string'
+          ? parseFloat(expense.amount)
+          : Number(expense.amount);
+      const parsedDate = new Date(expense.date);
+
+      const hasAll = Boolean(expense.date && expense.title && expense.amount);
+      const amountValid =
+        !Number.isNaN(parsedAmount) && Number.isFinite(parsedAmount);
+      const dateValid = !Number.isNaN(parsedDate.getTime());
+
+      if (!hasAll || !amountValid || !dateValid) {
+        if (contentType.includes('application/json')) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'text/plain');
+          res.end('Invalid payload');
+        } else {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+          res.end(
+            `<!doctype html><html><head><meta charset="utf-8"><title>Error</title></head><body><h1>Invalid input</h1><p>Please provide a valid date, title, and numeric amount.</p></body></html>`,
+          );
+        }
+
+        return;
+      }
+
+      const normalizedExpense = {
+        date: expense.date,
+        title: expense.title,
+        amount: String(expense.amount),
+      };
+
+      try {
+        mkdirSync(path.dirname(file), { recursive: true });
+      } catch (mkdirErr) {
+        console.error('Directory create error:', mkdirErr);
+        res.statusCode = 500;
         res.setHeader('Content-Type', 'text/plain');
-        res.end('Missing required fields');
+        res.end('Internal Server Error');
 
         return;
       }
@@ -90,10 +137,26 @@ function createServer() {
         res.end('Internal Server Error');
       });
 
-      writer.end(JSON.stringify(expense), () => {
+      const pretty = JSON.stringify(normalizedExpense, null, 2);
+
+      writer.end(pretty, () => {
         res.statusCode = 200;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify(expense));
+
+        if (contentType.includes('application/json')) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(normalizedExpense));
+        } else {
+          const escaped = pretty
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+          res.end(
+            `<!doctype html><html><head><meta charset="utf-8"><title>Saved</title></head><body><h1>Expense saved</h1><pre>${escaped}</pre></body></html>`,
+          );
+        }
       });
     });
 
